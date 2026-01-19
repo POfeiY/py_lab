@@ -17,7 +17,7 @@ def health() -> dict[str, str]:
 @app.post("/analyze")
 async def analyze_upload(
     file: UploadFile = File(..., description="CSV file to analyze"),
-    hist: Optional[str] = Query(None, description="Numeric column for histogram")
+    hist: Optional[str] = Form(None, description="Numeric column for histogram")
 ) -> dict:
     if not file.filename or not file.filename.lower().endswith(".csv"):
         raise HTTPException(status_code=404, detail="Only CSV files are supported")
