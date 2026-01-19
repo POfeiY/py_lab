@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 import time
 import uuid
@@ -10,8 +11,11 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 
 from py_lab.data_pipeline import basic_clean, load_csv, save_numeric_hist, summarize
+from py_lab.logging_utils import RequestIdFilter, setup_logging
 
 app = FastAPI(title="py-lab API", version="0.1.0")
+setup_logging()
+logger = logging.getLogger("py_lab.api")
 
 BASE_OUT_DIR = Path("out") / "requests"
 MAX_BYTES = 10 * 1024 * 1024  # 10 MB
@@ -44,6 +48,11 @@ async def analyze_upload(
         raise HTTPException(status_code=404, detail="Only CSV files are supported")
 
     req_id = uuid.uuid4().hex[:12]
+
+    req_logger = logging.getLogger("py_lab.api.request")
+    req_logger.addFilter(RequestIdFilter(req_id))
+    req_logger.info("request received: filename=%s", file.filename)
+
     work_dir = Path("out") / "requests" / req_id
     work_dir.mkdir(parents=True, exist_ok=True)
 
@@ -52,6 +61,7 @@ async def analyze_upload(
     if len(content) > MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large(max 10MB)")
     csv_path.write_bytes(content)
+    req_logger.info("saved input: %s (%d bytes)", csv_path, len(content))
 
     df = basic_clean(load_csv(csv_path))
     summary = summarize(df)
@@ -71,6 +81,8 @@ async def analyze_upload(
         result["hist_url"] = f"/results/{req_id}/hist.png"
 
     (work_dir / "summary.json").write_text(summary.to_json(), encoding="utf-8")
+    req_logger.info("summary: rows=%d cols=%d", summary.rows, summary.cols)
+
     result["summary_url"] = f"/results/{req_id}/summary"
 
     return result
