@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import logging
 
+from py_lab.logging_utils import setup_logging
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="py-lab")
@@ -14,6 +16,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    setup_logging()
+    logger = logging.getLogger("py_lab")
+
     parser = build_parser()
     args = parser.parse_args(argv)
 
@@ -29,19 +34,19 @@ def main(argv: list[str] | None = None) -> int:
         summary = summarize(df)
 
         (out_dir / "summary.json").write_text(summary.to_json(), encoding="utf-8")
-        print(f"Wrote: {out_dir / 'summary.json'}")
+        logger.info(f"Wrote: {out_dir / 'summary.json'}")
 
         if args.hist:
-          from py_lab.data_pipeline import save_numeric_hist
+            from py_lab.data_pipeline import save_numeric_hist
 
-          png_path = out_dir / "hist.png"
-          save_numeric_hist(df, args.hist, png_path)
-          print(f"Wrote: {png_path}")
+            png_path = out_dir / "hist.png"
+            save_numeric_hist(df, args.hist, png_path)
+            logger.info(f"Wrote: {png_path}")
 
         return 0
 
     if args.version:
-        print("py-lab 0.1.0")
+        logger.info("py-lab 0.1.0")
         return 0
 
     parser.print_help()

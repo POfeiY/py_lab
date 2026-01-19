@@ -5,6 +5,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from io import BytesIO
 
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
 
@@ -48,11 +50,11 @@ def save_numeric_hist(df: pd.DataFrame, column: str, out_path: str | Path, bins:
 
     s = pd.to_numeric(df[column], errors="coerce").dropna()
 
-    plt.figure()
-    plt.hist(s, bins=bins)
-    plt.title(f"Histogram: {column}")
-    plt.xlabel(column)
-    plt.ylabel("count")
-    plt.tight_layout()
-    plt.savefig(out)
+    flg, ax = plt.subplots()
+    ax.hist(s, bins=bins)
+    ax.set_title(f"Histogram: {column}")
+    ax.set_xlabel(column)
+    ax.set_ylabel("count")
+    flg.tight_layout()
+    flg.savefig(out)
     plt.close()

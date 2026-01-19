@@ -51,6 +51,10 @@ warn_unused_configs = true
 disallow_untyped_defs = false
 check_untyped_defs = true
 
+[[tool.mypy.overrides]]
+module = ["pandas.*", "matplotlib.*"]
+ignore_missing_imports = true
+
 [tool.poetry.scripts]
 py-lab = "py_lab.cli:main"
 
