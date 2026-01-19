@@ -7,19 +7,20 @@ import time
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Header
 from fastapi.responses import FileResponse, JSONResponse
 
 from py_lab.data_pipeline import basic_clean, load_csv, save_numeric_hist, summarize
 from py_lab.logging_utils import RequestIdFilter, setup_logging
+from py_lab.settings import settings
 
 app = FastAPI(title="py-lab API", version="0.1.0")
-setup_logging()
+setup_logging(settings.log_level)
 logger = logging.getLogger("py_lab.api")
 
-BASE_OUT_DIR = Path("out") / "requests"
-MAX_BYTES = 10 * 1024 * 1024  # 10 MB
-RESULT_TTL_SECONDS = 24 * 3600  # 24 hours
+BASE_OUT_DIR = Path(settings.out_dir) / "requests"
+MAX_BYTES = settings.max_bytes  # 10 MB
+RESULT_TTL_SECONDS = settings.result_ttl_seconds  # 24 hours
 
 @app.get("/results/{request_id}/summary")
 def get_summary(request_id:str) -> JSONResponse:
@@ -109,6 +110,10 @@ def cleanup_expired_requests(base_dir:Path,ttl_seconds:int) -> int:
     return removed
 
 @app.post("/admin/cleanup")
-def admin_cleanup() -> dict[str, int]:
+def admin_cleanup(x_admin_token: str | None = Header(default = None)) -> dict[str, int]:
+    if settings.admin_token:
+        if not x_admin_token or x_admin_token != settings.admin_token:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
     removed = cleanup_expired_requests(BASE_OUT_DIR, RESULT_TTL_SECONDS)
     return {"removed": removed}
