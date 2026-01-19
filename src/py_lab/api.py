@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 import json
+import shutil
+import time
 import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from py_lab.data_pipeline import basic_clean, load_csv, save_numeric_hist, summarize
 
 app = FastAPI(title="py-lab API", version="0.1.0")
 
 BASE_OUT_DIR = Path("out") / "requests"
+MAX_BYTES = 10 * 1024 * 1024  # 10 MB
+RESULT_TTL_SECONDS = 24 * 3600  # 24 hours
 
 @app.get("/results/{request_id}/summary")
 def get_summary(request_id:str) -> JSONResponse:
@@ -44,7 +48,9 @@ async def analyze_upload(
     work_dir.mkdir(parents=True, exist_ok=True)
 
     csv_path = work_dir / "input.csv"
-    content = await file.read()
+    content = await file.read(MAX_BYTES + 1)
+    if len(content) > MAX_BYTES:
+        raise HTTPException(status_code=413, detail="File too large(max 10MB)")
     csv_path.write_bytes(content)
 
     df = basic_clean(load_csv(csv_path))
@@ -68,3 +74,29 @@ async def analyze_upload(
     result["summary_url"] = f"/results/{req_id}/summary"
 
     return result
+
+def cleanup_expired_requests(base_dir:Path,ttl_seconds:int) -> int:
+    now = time.time()
+    removed = 0
+
+    if not base_dir.exists():
+        return 0
+
+    for subdir in base_dir.iterdir():
+        if not subdir.is_dir():
+            continue
+        try:
+            mtime = subdir.stat().st_mtime
+        except FileNotFoundError:
+            continue
+
+        if now - mtime > ttl_seconds:
+            shutil.rmtree(subdir, ignore_errors=True)
+            removed += 1
+
+    return removed
+
+@app.post("/admin/cleanup")
+def admin_cleanup() -> dict[str, int]:
+    removed = cleanup_expired_requests(BASE_OUT_DIR, RESULT_TTL_SECONDS)
+    return {"removed": removed}
