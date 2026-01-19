@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import Response
 
-from py_lab.data_pipeline import basic_clean,load_csv_bytes, save_numeric_hist, summarize
+from py_lab.data_pipeline import basic_clean, load_csv_bytes, summarize
 
 app = FastAPI(title="py-lab", version="0.1.0")
 
@@ -33,6 +33,7 @@ async def hist(column: str, file: UploadFile = File(...)) -> Response:
         raise HTTPException(status_code=400, detail=f"Column not found: {column}")
 
     from io import BytesIO
+
     import matplotlib.pyplot as plt
     import pandas as pd
 

@@ -5,6 +5,7 @@ import logging
 
 from py_lab.logging_utils import setup_logging
 
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="py-lab")
     parser.add_argument("--version", action="store_true", help="Show version and exit")

@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
-from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Query, File, UploadFile, Form
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 
-from py_lab.data_pipeline import basic_clean, load_csv, summarize, save_numeric_hist
+from py_lab.data_pipeline import basic_clean, load_csv, save_numeric_hist, summarize
 
 app = FastAPI(title="py-lab API", version="0.1.0")
 
@@ -17,7 +16,7 @@ def health() -> dict[str, str]:
 @app.post("/analyze")
 async def analyze_upload(
     file: UploadFile = File(..., description="CSV file to analyze"),
-    hist: Optional[str] = Form(None, description="Numeric column for histogram")
+    hist: str | None = Form(None, description="Numeric column for histogram")
 ) -> dict:
     if not file.filename or not file.filename.lower().endswith(".csv"):
         raise HTTPException(status_code=404, detail="Only CSV files are supported")
