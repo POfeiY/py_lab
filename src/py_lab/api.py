@@ -18,7 +18,7 @@ from py_lab.settings import settings
 
 app = FastAPI(title="py-lab API", version="0.1.0")
 
-RESULTS_DIR = Path(settings.output_dir) / "results"
+RESULTS_DIR = Path(settings.out_dir) / "results"
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 app.mount(
     "/results",
