@@ -13,11 +13,14 @@ from fastapi.staticfiles import StaticFiles
 
 from py_lab.data_pipeline import basic_clean, load_csv, save_numeric_hist, summarize
 from py_lab.logging_utils import RequestIdFilter, setup_logging
+from py_lab.schemas import AnalyzeResponse, CleanupResponse, ErrorResponse, SummaryModel
 from py_lab.settings import settings
-from py_lab.schemas import AnalyzeResponse, SummaryModel,ErrorResponse, CleanupResponse
 
 app = FastAPI(title="py-lab API", version="0.1.0")
-app.mount("/results", StaticFiles(directory=str(Path(settings.out_dir) / "results")), name="results")
+app.mount(
+    "/results",
+    StaticFiles(directory=str(Path(settings.out_dir) / "results")),
+    name="results")
 setup_logging(settings.log_level)
 logger = logging.getLogger("py_lab.api")
 
