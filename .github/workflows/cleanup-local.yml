@@ -1,0 +1,59 @@
+name: Cleanup results (local runner)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * *"
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t py-lab:ci .
+
+      - name: Run service container
+        env:
+          ADMIN_TOKEN: change_me
+          OUTPUT_DIR: /app/out
+          RESULT_TTL_SECONDS: "86400"
+          MAX_BYTES: "10485760"
+        run: |
+          set -euo pipefail
+          docker run -d --name py-lab \
+            -p 8000:8000 \
+            -e ADMIN_TOKEN="${ADMIN_TOKEN}" \
+            -e OUTPUT_DIR="${OUTPUT_DIR}" \
+            -e RESULT_TTL_SECONDS="${RESULT_TTL_SECONDS}" \
+            -e MAX_BYTES="${MAX_BYTES}" \
+            py-lab:ci
+
+      - name: Wait for health
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8000/health >/dev/null; then
+              echo "healthy"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "service not healthy in time"
+          docker logs py-lab || true
+          exit 1
+
+      - name: Call cleanup endpoint
+        env:
+          ADMIN_TOKEN: change_me
+        run: |
+          set -euo pipefail
+          curl -sS -X POST \
+            -H "X-Admin-Token: ${ADMIN_TOKEN}" \
+            http://127.0.0.1:8000/admin/cleanup
+
+      - name: Stop container
+        if: always()
+        run: |
+          docker rm -f py-lab || true
