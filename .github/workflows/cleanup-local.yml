@@ -30,9 +30,12 @@ jobs:
             -e MAX_BYTES="${MAX_BYTES}" \
             py-lab:ci
 
-      - name: Wait for health
+      - name: Wait for health (with debug)
         run: |
           set -euo pipefail
+          echo "Containers:"
+          docker ps -a || true
+
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:8000/health >/dev/null; then
               echo "healthy"
@@ -40,9 +43,14 @@ jobs:
             fi
             sleep 1
           done
+
           echo "service not healthy in time"
+          echo "docker ps -a:"
+          docker ps -a || true
+          echo "docker logs py-lab:"
           docker logs py-lab || true
           exit 1
+
 
       - name: Call cleanup endpoint
         env:
