@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from py_lab.data_pipeline import basic_clean, load_csv, save_numeric_hist, summarize
 from py_lab.logging_utils import RequestIdFilter, setup_logging
 from py_lab.settings import settings
+from py_lab.schemas import AnalyzeResponse, SummaryModel,ErrorResponse, CleanupResponse
 
 app = FastAPI(title="py-lab API", version="0.1.0")
 app.mount("/results", StaticFiles(directory=str(Path(settings.out_dir) / "results")), name="results")
@@ -29,14 +30,21 @@ def absolute_url(path:str) -> str:
         return path
     return settings.base_url.rstrip("/") + path
 
-@app.get("/results/{request_id}/summary.json")
+@app.get(
+    "/results/{request_id}/summary.json",
+    response_model=SummaryModel,
+    responses={404: {"model": ErrorResponse, "description": "Result Not Found"}},)
 def get_summary(request_id:str) -> JSONResponse:
     p = BASE_OUT_DIR / request_id / "summary.json"
     if not p.exists():
         raise HTTPException(status_code=404, detail="Result not found")
     return JSONResponse(content=json.loads(p.read_text(encoding="utf-8")))
 
-@app.get("/results/{request_id}/hist.png")
+@app.get(
+    "/results/{request_id}/hist.png",
+    responses={
+        200: {"content": {"image/png": {}}, "description": "Histogram PNG"},
+        404: {"model": ErrorResponse, "description": "Histogram Not Found"}},)
 def get_hist(request_id:str) -> FileResponse:
     p = BASE_OUT_DIR / request_id / "hist.png"
     if not p.exists():
@@ -47,7 +55,12 @@ def get_hist(request_id:str) -> FileResponse:
 def health() -> dict[str, str]:
     return {"status": "ok"}
 
-@app.post("/analyze")
+@app.post(
+    "/analyze",
+    response_model=AnalyzeResponse,
+    responses={
+        400: {"model": ErrorResponse, "description": "Bad Request"},
+        413: {"model": ErrorResponse, "description": "Payload Too Large"}},)
 async def analyze_upload(
     file: UploadFile = File(..., description="CSV file to analyze"),
     hist: str | None = Form(None, description="Numeric column for histogram")
@@ -116,7 +129,12 @@ def cleanup_expired_requests(base_dir:Path,ttl_seconds:int) -> int:
 
     return removed
 
-@app.post("/admin/cleanup")
+@app.post(
+    "/admin/cleanup",
+    response_model=CleanupResponse,
+    responses={
+        401: {"model": ErrorResponse, "description": "Unauthorized"},
+    },)
 def admin_cleanup(x_admin_token: str | None = Header(default = None)) -> dict[str, int]:
     if settings.admin_token:
         if not x_admin_token or x_admin_token != settings.admin_token:
