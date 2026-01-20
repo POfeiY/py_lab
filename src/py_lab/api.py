@@ -17,9 +17,12 @@ from py_lab.schemas import AnalyzeResponse, CleanupResponse, ErrorResponse, Summ
 from py_lab.settings import settings
 
 app = FastAPI(title="py-lab API", version="0.1.0")
+
+RESULTS_DIR = Path(settings.output_dir) / "results"
+RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 app.mount(
     "/results",
-    StaticFiles(directory=str(Path(settings.out_dir) / "results")),
+    StaticFiles(directory=str(RESULTS_DIR)),
     name="results")
 setup_logging(settings.log_level)
 logger = logging.getLogger("py_lab.api")
