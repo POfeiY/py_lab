@@ -9,12 +9,14 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from py_lab.data_pipeline import basic_clean, load_csv, save_numeric_hist, summarize
 from py_lab.logging_utils import RequestIdFilter, setup_logging
 from py_lab.settings import settings
 
 app = FastAPI(title="py-lab API", version="0.1.0")
+app.mount("/results", StaticFiles(directory=str(Path(settings.out_dir) / "results")), name="results")
 setup_logging(settings.log_level)
 logger = logging.getLogger("py_lab.api")
 
@@ -22,7 +24,12 @@ BASE_OUT_DIR = Path(settings.out_dir) / "requests"
 MAX_BYTES = settings.max_bytes  # 10 MB
 RESULT_TTL_SECONDS = settings.result_ttl_seconds  # 24 hours
 
-@app.get("/results/{request_id}/summary")
+def absolute_url(path:str) -> str:
+    if not settings.base_url:
+        return path
+    return settings.base_url.rstrip("/") + path
+
+@app.get("/results/{request_id}/summary.json")
 def get_summary(request_id:str) -> JSONResponse:
     p = BASE_OUT_DIR / request_id / "summary.json"
     if not p.exists():
@@ -54,7 +61,7 @@ async def analyze_upload(
     req_logger.addFilter(RequestIdFilter(req_id))
     req_logger.info("request received: filename=%s", file.filename)
 
-    work_dir = Path("out") / "requests" / req_id
+    work_dir = Path(settings.out_dir) / "results" / req_id
     work_dir.mkdir(parents=True, exist_ok=True)
 
     csv_path = work_dir / "input.csv"
@@ -79,12 +86,12 @@ async def analyze_upload(
     if hist:
         png_path = work_dir / "hist.png"
         save_numeric_hist(df, hist, png_path)
-        result["hist_url"] = f"/results/{req_id}/hist.png"
+        result["hist_url"] = absolute_url(f"/results/{req_id}/hist.png")
 
     (work_dir / "summary.json").write_text(summary.to_json(), encoding="utf-8")
     req_logger.info("summary: rows=%d cols=%d", summary.rows, summary.cols)
 
-    result["summary_url"] = f"/results/{req_id}/summary"
+    result["summary_url"] = absolute_url(f"/results/{req_id}/summary.json")
 
     return result
 

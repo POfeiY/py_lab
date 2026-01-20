@@ -17,5 +17,6 @@ class Settings:
     max_bytes: int = _get_init("MAX_BYTES", 10 * 1024 * 1024)
     result_ttl_seconds: int = _get_init("RESULT_TTL_SECONDS", 24 * 60 * 60)
     admin_token: str = os.getenv("ADMIN_TOKEN", "")
+    base_url: str = os.getenv("BASE_URL", "")
 
 settings = Settings()
