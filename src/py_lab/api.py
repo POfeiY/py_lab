@@ -60,8 +60,9 @@ def make_download_url(req_id:str, filename:str) -> str:
     sig = sign(settings.download_signing_key, message)
     return absolute_url(f"/download/{req_id}/{filename}?exp={exp}&sig={sig}")
 
-@app.get(
+@app.api_route(
     "/download/{request_id}/{filename}",
+    methods=["GET", "HEAD"],
     responses={
         200: {"content": {"image/png": {}}, "description": "File Download"},
         403: {"model": ErrorResponse, "description": "Forbidden"},
@@ -70,13 +71,13 @@ def make_download_url(req_id:str, filename:str) -> str:
 )
 def download_file(request_id:str, filename:str, exp: int = Query(...), sig: str = Query(...)):
     if filename not in ('hist.png', 'summary.json'):
-        raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(status_code=404, detail="File not found with suffix")
 
     _required_valid_signature(request_id, filename, exp, sig)
 
     p = BASE_OUT_DIR / request_id / filename
     if not p.exists():
-        raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(status_code=404, detail=f"File not found: {p}")
 
     media_type = "image/png" if filename.endswith(".png") else "application/json"
     return FileResponse(path=str(p), media_type=media_type, filename=filename)
@@ -125,7 +126,7 @@ async def analyze_upload(
     req_logger.addFilter(RequestIdFilter(req_id))
     req_logger.info("request received: filename=%s", file.filename)
 
-    work_dir = Path(settings.out_dir) / "results" / req_id
+    work_dir = Path(settings.out_dir) / "requests" / req_id
     work_dir.mkdir(parents=True, exist_ok=True)
 
     csv_path = work_dir / "input.csv"
@@ -150,12 +151,12 @@ async def analyze_upload(
     if hist:
         png_path = work_dir / "hist.png"
         save_numeric_hist(df, hist, png_path)
-        result["hist_url"] = absolute_url(f"/results/{req_id}/hist.png")
+        result["hist_url"] = make_download_url(req_id, "hist.png")
 
     (work_dir / "summary.json").write_text(summary.to_json(), encoding="utf-8")
     req_logger.info("summary: rows=%d cols=%d", summary.rows, summary.cols)
 
-    result["summary_url"] = absolute_url(f"/results/{req_id}/summary.json")
+    result["summary_url"] = make_download_url(req_id, "summary.json")
 
     return result
 
