@@ -11,6 +11,7 @@ from fastapi import FastAPI, File, Form, Header, HTTPException, Query, UploadFil
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from py_lab.anomaly import detect_anomalies
 from py_lab.data_pipeline import basic_clean, load_csv, save_numeric_hist, summarize
 from py_lab.logging_utils import RequestIdFilter, setup_logging
 from py_lab.schemas import AnalyzeResponse, CleanupResponse, ErrorResponse, SummaryModel
@@ -115,8 +116,10 @@ def health() -> dict[str, str]:
         413: {"model": ErrorResponse, "description": "Payload Too Large"}},)
 async def analyze_upload(
     file: UploadFile = File(..., description="CSV file to analyze"),
-    hist: str | None = Form(None, description="Numeric column for histogram")
-) -> dict:
+    hist: str | None = Form(None, description="Numeric column for histogram"),
+    top_k: int = Form(5, ge=1, le=50,description="Top-K anomalies"),
+    contamination: float = Form(0.05, ge=0.001, le=0.3, description="Expected anomaly fraction"),
+    ) -> dict:
     if not file.filename or not file.filename.lower().endswith(".csv"):
         raise HTTPException(status_code=404, detail="Only CSV files are supported")
 
@@ -157,6 +160,26 @@ async def analyze_upload(
     req_logger.info("summary: rows=%d cols=%d", summary.rows, summary.cols)
 
     result["summary_url"] = make_download_url(req_id, "summary.json")
+
+    anom = detect_anomalies(df, top_k=top_k, contamination=contamination)
+    if anom:
+        result["anomaly"] = {
+            "indices": anom.indices,
+            "scores": anom.scores,
+        }
+        top_rows = []
+        for idx, score in zip(anom.indices, anom.scores,strict=True):
+            # 提取对应行的数据（转成 JSON 序列化）
+            row_dict = df.loc[idx].to_dict()
+            # pandas 可能给numpy 类型，这里做一次转换
+            safe_row = {k: (v.item() if hasattr(v, "item") else v) for k, v in row_dict.items()}
+            top_rows.append({
+                "index": idx,
+                "score": score,
+                "row": safe_row,
+            })
+
+        result["anomaly"]["top_rows"] = top_rows
 
     return result
 
