@@ -4,10 +4,10 @@ import argparse
 from pathlib import Path
 
 import joblib
-import pandas as pd
 from sklearn.ensemble import IsolationForest
 
 from py_lab.data_pipeline import basic_clean, load_csv
+
 
 def main() -> None:
   parser = argparse.ArgumentParser()

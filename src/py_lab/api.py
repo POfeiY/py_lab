@@ -11,9 +11,10 @@ from fastapi import FastAPI, File, Form, Header, HTTPException, Query, UploadFil
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from py_lab.anomaly import detect_anomalies
+from py_lab.anomaly import detect_anomalies, score_anomalies_with_model
 from py_lab.data_pipeline import basic_clean, load_csv, save_numeric_hist, summarize
 from py_lab.logging_utils import RequestIdFilter, setup_logging
+from py_lab.model_store import load_iforest
 from py_lab.schemas import AnalyzeResponse, CleanupResponse, ErrorResponse, SummaryModel
 from py_lab.settings import settings
 from py_lab.signing import constant_time_eq, sign
@@ -161,7 +162,7 @@ async def analyze_upload(
 
     result["summary_url"] = make_download_url(req_id, "summary.json")
 
-    anom = detect_anomalies(df, top_k=top_k, contamination=contamination)
+    anom = score_anomalies_with_model(df, bundle=load_iforest(settings.model_path), top_k=top_k)
     if anom:
         result["anomaly"] = {
             "indices": anom.indices,

@@ -5,6 +5,8 @@ from dataclasses import dataclass
 import pandas as pd
 from sklearn.ensemble import IsolationForest
 
+from py_lab.model_store import IsolationForestBundle
+
 
 @dataclass(frozen=True)
 class AnomalyResult:
@@ -45,3 +47,24 @@ def detect_anomalies(
     indices=[int(i) for i in top_idx.index],
     scores=[float(v) for v in top_idx.values]
     )
+
+def score_anomalies_with_model(
+  df: pd.DataFrame,
+  bundle: IsolationForestBundle,
+  top_k: int = 5
+) -> AnomalyResult | None:
+  X = df.reindex(columns=bundle.feature_columns)
+  # 缺列或无数据，直接反馈None
+  if X.shape[1] == 0 or X.shape[0] < 1:
+    return None
+
+  X = X.apply(pd.to_numeric, errors="coerce")
+
+  scores = (-bundle.model.score_samples(X)).astype(float)
+  top_k = max(1, min(int(top_k), len(scores)))
+  top_idx = pd.Series(scores, index=df.index).sort_values(ascending=False).head(top_k)
+
+  return AnomalyResult(
+    indices=[int(i) for i in top_idx.index],
+    scores=[float(v) for v in top_idx.values]
+  )
