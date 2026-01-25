@@ -11,11 +11,17 @@ from fastapi import FastAPI, File, Form, Header, HTTPException, Query, UploadFil
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from py_lab.anomaly import detect_anomalies, score_anomalies_with_model
+from py_lab.anomaly import score_anomalies_with_model
 from py_lab.data_pipeline import basic_clean, load_csv, save_numeric_hist, summarize
 from py_lab.logging_utils import RequestIdFilter, setup_logging
 from py_lab.model_store import load_iforest, reload_iforest
-from py_lab.schemas import AnalyzeResponse, CleanupResponse, ErrorResponse, SummaryModel, ReloadModelResponse
+from py_lab.schemas import (
+    AnalyzeResponse,
+    CleanupResponse,
+    ErrorResponse,
+    ReloadModelResponse,
+    SummaryModel,
+)
 from py_lab.settings import settings
 from py_lab.signing import constant_time_eq, sign
 
@@ -238,4 +244,6 @@ def admin_reload_model(x_admin_token: str | None = Header(default = None)) -> Re
         logger.error("Failed to load model: %s", e)
         raise HTTPException(status_code=500, detail="Model load failed")
 
-    return ReloadModelResponse(model_path=settings.model_path, feature_columns=bundle.feature_columns)
+    return ReloadModelResponse(
+        model_path=settings.model_path,
+        feature_columns=bundle.feature_columns)
