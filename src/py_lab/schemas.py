@@ -31,3 +31,7 @@ class AnomalyRowPreview(BaseModel):
     index: int
     score: float
     row: dict[str, str | float | int | None]
+
+class ReloadModelResponse(BaseModel):
+    model_path:str
+    feature_columns: list[str]

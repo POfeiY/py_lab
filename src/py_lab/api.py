@@ -14,8 +14,8 @@ from fastapi.staticfiles import StaticFiles
 from py_lab.anomaly import detect_anomalies, score_anomalies_with_model
 from py_lab.data_pipeline import basic_clean, load_csv, save_numeric_hist, summarize
 from py_lab.logging_utils import RequestIdFilter, setup_logging
-from py_lab.model_store import load_iforest
-from py_lab.schemas import AnalyzeResponse, CleanupResponse, ErrorResponse, SummaryModel
+from py_lab.model_store import load_iforest, reload_iforest
+from py_lab.schemas import AnalyzeResponse, CleanupResponse, ErrorResponse, SummaryModel, ReloadModelResponse
 from py_lab.settings import settings
 from py_lab.signing import constant_time_eq, sign
 
@@ -218,3 +218,24 @@ def admin_cleanup(x_admin_token: str | None = Header(default = None)) -> dict[st
 
     removed = cleanup_expired_requests(BASE_OUT_DIR, RESULT_TTL_SECONDS)
     return {"removed": removed}
+
+@app.post(
+    "/admin/reload-model",
+    response_model=ReloadModelResponse,
+    responses={
+        401: {"model": ErrorResponse, "description": "Unauthorized"},
+        500: {"model": ErrorResponse, "description": "Model Load Failed"},
+    }
+)
+def admin_reload_model(x_admin_token: str | None = Header(default = None)) -> ReloadModelResponse:
+    if settings.admin_token:
+        if not x_admin_token or x_admin_token != settings.admin_token:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+    try:
+        bundle = reload_iforest(settings.model_path)
+    except Exception as e:
+        logger.error("Failed to load model: %s", e)
+        raise HTTPException(status_code=500, detail="Model load failed")
+
+    return ReloadModelResponse(model_path=settings.model_path, feature_columns=bundle.feature_columns)
