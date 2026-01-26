@@ -136,17 +136,25 @@ async def analyze_upload(
     req_logger.addFilter(RequestIdFilter(req_id))
     req_logger.info("request received: filename=%s", file.filename)
 
+    t0 = time.perf_counter()
+    marks:dict[str, float] = {}
+
+    def mark(name:str) -> None:
+        marks[name] = (time.perf_counter() - t0) * 1000.0  # ms
+
     work_dir = Path(settings.out_dir) / "requests" / req_id
     work_dir.mkdir(parents=True, exist_ok=True)
 
     csv_path = work_dir / "input.csv"
     content = await file.read(MAX_BYTES + 1)
+    mark("io_save_input")
     if len(content) > MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large(max 10MB)")
     csv_path.write_bytes(content)
     req_logger.info("saved input: %s (%d bytes)", csv_path, len(content))
 
     df = basic_clean(load_csv(csv_path))
+    mark("data_load_clean")
     summary = summarize(df)
 
     result:dict = {
@@ -162,13 +170,17 @@ async def analyze_upload(
         png_path = work_dir / "hist.png"
         save_numeric_hist(df, hist, png_path)
         result["hist_url"] = make_download_url(req_id, "hist.png")
+    mark('hist')
 
     (work_dir / "summary.json").write_text(summary.to_json(), encoding="utf-8")
+    mark("save_summary")
     req_logger.info("summary: rows=%d cols=%d", summary.rows, summary.cols)
 
     result["summary_url"] = make_download_url(req_id, "summary.json")
+    mark("io_save_outputs")
 
     anom = score_anomalies_with_model(df, bundle=load_iforest(settings.model_path), top_k=top_k)
+    mark("anomaly_score")
     if anom:
         result["anomaly"] = {
             "indices": anom.indices,
@@ -188,6 +200,8 @@ async def analyze_upload(
 
         result["anomaly"]["top_rows"] = top_rows
 
+    mark("complete")
+    req_logger.info("timing_ms=%s", {k: round(v, 2) for k, v in marks.items()})
     return result
 
 def cleanup_expired_requests(base_dir:Path,ttl_seconds:int) -> int:
