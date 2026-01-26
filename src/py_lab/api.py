@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from py_lab.anomaly import score_anomalies_with_model
 from py_lab.data_pipeline import basic_clean, load_csv, save_numeric_hist, summarize
-from py_lab.logging_utils import RequestIdFilter, setup_logging
+from py_lab.logging_utils import RequestIdFilter, log_json, setup_logging, log_exception
 from py_lab.model_store import load_iforest, reload_iforest
 from py_lab.schemas import (
     AnalyzeResponse,
@@ -33,6 +33,14 @@ app.mount(
     "/results",
     StaticFiles(directory=str(RESULTS_DIR)),
     name="results")
+
+class RequestIDFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.request_id = getattr(record, "request_id", None)
+        return True
+
+logging.basicConfig(level=logging.INFO)
+logging.getLogger().addFilter(RequestIDFilter())
 setup_logging(settings.log_level)
 logger = logging.getLogger("py_lab.api")
 
@@ -122,87 +130,100 @@ def health() -> dict[str, str]:
         400: {"model": ErrorResponse, "description": "Bad Request"},
         413: {"model": ErrorResponse, "description": "Payload Too Large"}},)
 async def analyze_upload(
-    file: UploadFile = File(..., description="CSV file to analyze"),
-    hist: str | None = Form(None, description="Numeric column for histogram"),
-    top_k: int = Form(5, ge=1, le=50,description="Top-K anomalies"),
-    contamination: float = Form(0.05, ge=0.001, le=0.3, description="Expected anomaly fraction"),
-    ) -> dict:
-    if not file.filename or not file.filename.lower().endswith(".csv"):
-        raise HTTPException(status_code=404, detail="Only CSV files are supported")
+        file: UploadFile = File(..., description="CSV file to analyze"),
+        hist: str | None = Form(None, description="Numeric column for histogram"),
+        top_k: int = Form(5, ge=1, le=50,description="Top-K anomalies"),
+        contamination: float = Form(0.05, ge=0.001, le=0.3, description="Expected anomaly fraction"),
+) -> dict:
+        try:
+            if not file.filename or not file.filename.lower().endswith(".csv"):
+                raise HTTPException(status_code=404, detail="Only CSV files are supported")
 
-    req_id = secrets.token_urlsafe(24)
+            req_id = secrets.token_urlsafe(24)
 
-    req_logger = logging.getLogger("py_lab.api.request")
-    req_logger.addFilter(RequestIdFilter(req_id))
-    req_logger.info("request received: filename=%s", file.filename)
+            req_logger = logging.getLogger("py_lab.api.request")
+            req_logger.addFilter(RequestIdFilter(req_id))
+            req_logger.info("request received: filename=%s", file.filename)
 
-    t0 = time.perf_counter()
-    marks:dict[str, float] = {}
+            t0 = time.perf_counter()
+            marks:dict[str, float] = {}
 
-    def mark(name:str) -> None:
-        marks[name] = (time.perf_counter() - t0) * 1000.0  # ms
+            def mark(name:str) -> None:
+                marks[name] = (time.perf_counter() - t0) * 1000.0  # ms
 
-    work_dir = Path(settings.out_dir) / "requests" / req_id
-    work_dir.mkdir(parents=True, exist_ok=True)
+            work_dir = Path(settings.out_dir) / "requests" / req_id
+            work_dir.mkdir(parents=True, exist_ok=True)
 
-    csv_path = work_dir / "input.csv"
-    content = await file.read(MAX_BYTES + 1)
-    mark("io_save_input")
-    if len(content) > MAX_BYTES:
-        raise HTTPException(status_code=413, detail="File too large(max 10MB)")
-    csv_path.write_bytes(content)
-    req_logger.info("saved input: %s (%d bytes)", csv_path, len(content))
+            csv_path = work_dir / "input.csv"
+            content = await file.read(MAX_BYTES + 1)
+            mark("io_save_input")
+            if len(content) > MAX_BYTES:
+                raise HTTPException(status_code=413, detail="File too large(max 10MB)")
+            csv_path.write_bytes(content)
+            req_logger.info("saved input: %s (%d bytes)", csv_path, len(content))
 
-    df = basic_clean(load_csv(csv_path))
-    mark("data_load_clean")
-    summary = summarize(df)
+            df = basic_clean(load_csv(csv_path))
+            mark("data_load_clean")
+            summary = summarize(df)
 
-    result:dict = {
-        "request_id": req_id,
-        "summary": {
-            "rows": summary.rows,
-            "cols": summary.cols,
-            "columns": summary.columns,
-        },
-    }
+            result:dict = {
+                "request_id": req_id,
+                "summary": {
+                    "rows": summary.rows,
+                    "cols": summary.cols,
+                    "columns": summary.columns,
+                },
+            }
 
-    if hist:
-        png_path = work_dir / "hist.png"
-        save_numeric_hist(df, hist, png_path)
-        result["hist_url"] = make_download_url(req_id, "hist.png")
-    mark('hist')
+            if hist:
+                png_path = work_dir / "hist.png"
+                save_numeric_hist(df, hist, png_path)
+                result["hist_url"] = make_download_url(req_id, "hist.png")
+            mark('hist')
 
-    (work_dir / "summary.json").write_text(summary.to_json(), encoding="utf-8")
-    mark("save_summary")
-    req_logger.info("summary: rows=%d cols=%d", summary.rows, summary.cols)
+            (work_dir / "summary.json").write_text(summary.to_json(), encoding="utf-8")
+            mark("save_summary")
+            req_logger.info("summary: rows=%d cols=%d", summary.rows, summary.cols)
 
-    result["summary_url"] = make_download_url(req_id, "summary.json")
-    mark("io_save_outputs")
+            result["summary_url"] = make_download_url(req_id, "summary.json")
+            mark("io_save_outputs")
 
-    anom = score_anomalies_with_model(df, bundle=load_iforest(settings.model_path), top_k=top_k)
-    mark("anomaly_score")
-    if anom:
-        result["anomaly"] = {
-            "indices": anom.indices,
-            "scores": anom.scores,
-        }
-        top_rows = []
-        for idx, score in zip(anom.indices, anom.scores,strict=True):
-            # 提取对应行的数据（转成 JSON 序列化）
-            row_dict = df.loc[idx].to_dict()
-            # pandas 可能给numpy 类型，这里做一次转换
-            safe_row = {k: (v.item() if hasattr(v, "item") else v) for k, v in row_dict.items()}
-            top_rows.append({
-                "index": idx,
-                "score": score,
-                "row": safe_row,
-            })
+            anom = score_anomalies_with_model(df, bundle=load_iforest(settings.model_path), top_k=top_k)
+            mark("anomaly_score")
+            if anom:
+                result["anomaly"] = {
+                    "indices": anom.indices,
+                    "scores": anom.scores,
+                }
+                top_rows = []
+                for idx, score in zip(anom.indices, anom.scores,strict=True):
+                    # 提取对应行的数据（转成 JSON 序列化）
+                    row_dict = df.loc[idx].to_dict()
+                    # pandas 可能给numpy 类型，这里做一次转换
+                    safe_row = {k: (v.item() if hasattr(v, "item") else v) for k, v in row_dict.items()}
+                    top_rows.append({
+                        "index": idx,
+                        "score": score,
+                        "row": safe_row,
+                    })
 
-        result["anomaly"]["top_rows"] = top_rows
+                result["anomaly"]["top_rows"] = top_rows
 
-    mark("complete")
-    req_logger.info("timing_ms=%s", {k: round(v, 2) for k, v in marks.items()})
-    return result
+            mark("complete")
+            log_json(
+                req_logger,
+                logging.INFO,
+                "analyze_completed",
+                time_ms={k:round(v, 2) for k,v in marks.items()},
+                rows=summary.rows,
+                cols=summary.cols,
+                request_id=req_id
+            )
+            return result
+            pass
+        except Exception as e:
+            log_exception(req_logger, e, "analyze_failure", request_id=req_id)
+            raise HTTPException(status_code=500, detail="Internal server error")
 
 def cleanup_expired_requests(base_dir:Path,ttl_seconds:int) -> int:
     now = time.time()
