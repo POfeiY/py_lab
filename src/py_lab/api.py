@@ -135,13 +135,12 @@ async def analyze_upload(
         top_k: int = Form(5, ge=1, le=50,description="Top-K anomalies"),
         contamination: float = Form(0.05, ge=0.001, le=0.3, description="Expected anomaly fraction"),
 ) -> dict:
+        req_logger = logging.getLogger("py_lab.api.request")
+        req_id = secrets.token_urlsafe(24)
         try:
             if not file.filename or not file.filename.lower().endswith(".csv"):
                 raise HTTPException(status_code=404, detail="Only CSV files are supported")
 
-            req_id = secrets.token_urlsafe(24)
-
-            req_logger = logging.getLogger("py_lab.api.request")
             req_logger.addFilter(RequestIdFilter(req_id))
             req_logger.info("request received: filename=%s", file.filename)
 
