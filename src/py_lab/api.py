@@ -28,12 +28,11 @@ from py_lab.signing import constant_time_eq, sign
 
 app = FastAPI(title="py-lab API", version="0.1.0")
 
-BASE_OUT_DIR = Path(settings.out_dir) / "results"
-BASE_OUT_DIR.mkdir(parents=True, exist_ok=True)
-
+RESULTS_DIR = Path(settings.out_dir) / "results"
+RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 app.mount(
     "/results",
-    StaticFiles(directory=str(BASE_OUT_DIR)),
+    StaticFiles(directory=str(RESULTS_DIR)),
     name="results")
 
 class RequestIDFilter(logging.Filter):
@@ -46,6 +45,7 @@ logging.getLogger().addFilter(RequestIDFilter())
 setup_logging(settings.log_level)
 logger = logging.getLogger("py_lab.api")
 
+BASE_OUT_DIR = Path(settings.out_dir) / "requests"
 MAX_BYTES = settings.max_bytes  # 10 MB
 RESULT_TTL_SECONDS = settings.result_ttl_seconds  # 24 hours
 
@@ -53,7 +53,7 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 def status_path(request_id:str) -> Path:
-    return BASE_OUT_DIR / request_id / "status.json"
+    return RESULTS_DIR / request_id / "status.json"
 
 def write_status(request_id:str, payload:dict) -> None:
     p = status_path(request_id)
@@ -168,7 +168,7 @@ def run_analyze_job(req_id: str, hist:str | None, top_k:int) -> None:
         marks[name] = round((time.perf_counter() - t0) * 1000, 2)  # ms
 
     try:
-        work_dir = BASE_OUT_DIR / req_id
+        work_dir = BASE_OUT_DIR/ req_id
         work_dir.mkdir(parents=True, exist_ok=True)
 
         csv_path = work_dir / "input.csv"
@@ -259,7 +259,7 @@ async def analyze_upload(
 
         background_tasks.add_task(run_analyze_job,req_id, hist, top_k)
 
-        return AnalyzeAcceptedResponse(request_id=req_id, status_url=f"/results/{req_id}/status")
+        return AnalyzeAcceptedResponse(request_id=req_id, status_url=f"/requests/{req_id}/status")
 
 def cleanup_expired_requests(base_dir:Path,ttl_seconds:int) -> int:
     now = time.time()
