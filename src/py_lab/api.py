@@ -5,18 +5,19 @@ import logging
 import secrets
 import shutil
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, Header, HTTPException, Query, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from py_lab.anomaly import score_anomalies_with_model
 from py_lab.data_pipeline import basic_clean, load_csv, save_numeric_hist, summarize
-from py_lab.logging_utils import RequestIdFilter, log_json, setup_logging, log_exception
-from py_lab.model_store import load_iforest, reload_iforest
+from py_lab.logging_utils import RequestIdFilter, log_exception, log_json, setup_logging
+from py_lab.model_store import reload_iforest
 from py_lab.schemas import (
-    AnalyzeResponse,
+    AnalyzeAcceptedResponse,
+    AnalyzeStatusResponse,
     CleanupResponse,
     ErrorResponse,
     ReloadModelResponse,
@@ -27,11 +28,12 @@ from py_lab.signing import constant_time_eq, sign
 
 app = FastAPI(title="py-lab API", version="0.1.0")
 
-RESULTS_DIR = Path(settings.out_dir) / "results"
-RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+BASE_OUT_DIR = Path(settings.out_dir) / "results"
+BASE_OUT_DIR.mkdir(parents=True, exist_ok=True)
+
 app.mount(
     "/results",
-    StaticFiles(directory=str(RESULTS_DIR)),
+    StaticFiles(directory=str(BASE_OUT_DIR)),
     name="results")
 
 class RequestIDFilter(logging.Filter):
@@ -44,9 +46,30 @@ logging.getLogger().addFilter(RequestIDFilter())
 setup_logging(settings.log_level)
 logger = logging.getLogger("py_lab.api")
 
-BASE_OUT_DIR = Path(settings.out_dir) / "requests"
 MAX_BYTES = settings.max_bytes  # 10 MB
 RESULT_TTL_SECONDS = settings.result_ttl_seconds  # 24 hours
+
+def _now_iso() -> str:
+    return datetime.now(UTC).isoformat()
+
+def status_path(request_id:str) -> Path:
+    return BASE_OUT_DIR / request_id / "status.json"
+
+def write_status(request_id:str, payload:dict) -> None:
+    p = status_path(request_id)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        **payload,
+        "request_id": request_id,
+        "updated_at": _now_iso(),
+    }
+    p.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+
+def read_status(request_id:str) -> dict:
+    p = status_path(request_id)
+    if not p.exists():
+        raise None
+    return json.loads(p.read_text(encoding="utf-8"))
 
 def absolute_url(path:str) -> str:
     if not settings.base_url:
@@ -75,6 +98,16 @@ def make_download_url(req_id:str, filename:str) -> str:
     message = f"{req_id}:{filename}:{exp}"
     sig = sign(settings.download_signing_key, message)
     return absolute_url(f"/download/{req_id}/{filename}?exp={exp}&sig={sig}")
+
+@app.get(
+    "/requests/{request_id}/status",
+    response_model=AnalyzeStatusResponse,
+    responses={404: {"model": ErrorResponse, "description": "Status Not Found"}})
+def get_status(request_id:str) -> AnalyzeStatusResponse:
+    st = read_status(request_id)
+    if st is None:
+        raise HTTPException(status_code=404, detail="Status not found")
+    return AnalyzeStatusResponse(**st)
 
 @app.api_route(
     "/download/{request_id}/{filename}",
@@ -123,106 +156,110 @@ def get_hist(request_id:str) -> FileResponse:
 def health() -> dict[str, str]:
     return {"status": "ok"}
 
+def run_analyze_job(req_id: str, hist:str | None, top_k:int) -> None:
+    req_logger = logging.getLogger("py_lab.job")
+    req_logger.addFilter(RequestIdFilter(req_id))
+
+    write_status(req_id, {"status": "running",})
+
+    t0 = time.perf_counter()
+    marks:dict[str, float] = {}
+    def mark(name:str) -> None:
+        marks[name] = round((time.perf_counter() - t0) * 1000, 2)  # ms
+
+    try:
+        work_dir = BASE_OUT_DIR / req_id
+        work_dir.mkdir(parents=True, exist_ok=True)
+
+        csv_path = work_dir / "input.csv"
+
+        # 1) 读取输入 + 清洗
+        df = basic_clean(load_csv(csv_path))
+        mark("data_load_clean")
+
+        # 2) summary
+        summary = summarize(df)
+        (work_dir / "summary.json").write_text(
+            json.dumps(
+                {"rows": summary.rows, "cols": summary.cols, "columns": summary.columns},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+            encoding="utf-8",
+        )
+        mark("save_summary")
+
+        # 3) anomaly（加载模型推理）
+        # bundle = load_iforest(settings.model_path)
+        # anom = score_anomalies_with_model(df, bundle=bundle, top_k=top_k)
+        # 你若要把 anomaly 也落盘，可写 anomaly.json（可选）
+        mark("anomaly_score")
+
+        # 4) hist（可选）
+        if hist:
+            png_path = work_dir / "hist.png"
+            save_numeric_hist(df, hist, png_path)
+            # result["hist_url"] = make_download_url(req_id, "hist.png")
+        mark('hist')
+
+        # 5) 生成下载/静态 URL
+        hist_url = make_download_url(req_id, "hist.png") if hist else None
+        summary_url = make_download_url(req_id, "summary.json")
+
+        mark("complete")
+
+        write_status(
+            req_id,
+            {
+                "status": "done",
+                "summary_url": summary_url,
+                "hist_url": hist_url,
+                "timing_ms": marks,
+            },
+        )
+
+        # 结构化日志（你已有 log_json）
+        log_json(req_logger, logging.INFO, "analyze_completed", request_id=req_id, time_ms=marks)
+
+    except Exception as e:
+        write_status(req_id, {
+            "status": "failed",
+            "error": f"{type(e).__name__}: {e}",})
+        log_exception(req_logger, e, "analyze_job_failure", request_id=req_id)
+
 @app.post(
     "/analyze",
-    response_model=AnalyzeResponse,
+    response_model=AnalyzeAcceptedResponse,
+    status_code=202,
     responses={
         400: {"model": ErrorResponse, "description": "Bad Request"},
         413: {"model": ErrorResponse, "description": "Payload Too Large"}},)
 async def analyze_upload(
+        background_tasks: BackgroundTasks,
         file: UploadFile = File(..., description="CSV file to analyze"),
         hist: str | None = Form(None, description="Numeric column for histogram"),
-        top_k: int = Form(5, ge=1, le=50,description="Top-K anomalies"),
-        contamination: float = Form(0.05, ge=0.001, le=0.3, description="Expected anomaly fraction"),
-) -> dict:
-        req_logger = logging.getLogger("py_lab.api.request")
+        top_k: int = Form(5, ge=1, le=50,description="Top-K anomalies")
+) -> AnalyzeAcceptedResponse:
+        if not file.filename or not file.filename.lower().endswith(".csv"):
+            raise HTTPException(status_code=404, detail="Only CSV files are supported")
+
         req_id = secrets.token_urlsafe(24)
-        try:
-            if not file.filename or not file.filename.lower().endswith(".csv"):
-                raise HTTPException(status_code=404, detail="Only CSV files are supported")
 
-            req_logger.addFilter(RequestIdFilter(req_id))
-            req_logger.info("request received: filename=%s", file.filename)
+        work_dir = BASE_OUT_DIR / req_id
+        work_dir.mkdir(parents=True, exist_ok=True)
 
-            t0 = time.perf_counter()
-            marks:dict[str, float] = {}
+        # 读文件（带 MAX_BYTES 限制）
+        content = await file.read(MAX_BYTES + 1)
+        if len(content) > MAX_BYTES:
+            raise HTTPException(status_code=413, detail="File too large(max 10MB)")
 
-            def mark(name:str) -> None:
-                marks[name] = (time.perf_counter() - t0) * 1000.0  # ms
+        (work_dir / "input.csv").write_bytes(content)
 
-            work_dir = Path(settings.out_dir) / "requests" / req_id
-            work_dir.mkdir(parents=True, exist_ok=True)
+        write_status(req_id, {"status": "queued"})
 
-            csv_path = work_dir / "input.csv"
-            content = await file.read(MAX_BYTES + 1)
-            mark("io_save_input")
-            if len(content) > MAX_BYTES:
-                raise HTTPException(status_code=413, detail="File too large(max 10MB)")
-            csv_path.write_bytes(content)
-            req_logger.info("saved input: %s (%d bytes)", csv_path, len(content))
+        background_tasks.add_task(run_analyze_job,req_id, hist, top_k)
 
-            df = basic_clean(load_csv(csv_path))
-            mark("data_load_clean")
-            summary = summarize(df)
-
-            result:dict = {
-                "request_id": req_id,
-                "summary": {
-                    "rows": summary.rows,
-                    "cols": summary.cols,
-                    "columns": summary.columns,
-                },
-            }
-
-            if hist:
-                png_path = work_dir / "hist.png"
-                save_numeric_hist(df, hist, png_path)
-                result["hist_url"] = make_download_url(req_id, "hist.png")
-            mark('hist')
-
-            (work_dir / "summary.json").write_text(summary.to_json(), encoding="utf-8")
-            mark("save_summary")
-            req_logger.info("summary: rows=%d cols=%d", summary.rows, summary.cols)
-
-            result["summary_url"] = make_download_url(req_id, "summary.json")
-            mark("io_save_outputs")
-
-            anom = score_anomalies_with_model(df, bundle=load_iforest(settings.model_path), top_k=top_k)
-            mark("anomaly_score")
-            if anom:
-                result["anomaly"] = {
-                    "indices": anom.indices,
-                    "scores": anom.scores,
-                }
-                top_rows = []
-                for idx, score in zip(anom.indices, anom.scores,strict=True):
-                    # 提取对应行的数据（转成 JSON 序列化）
-                    row_dict = df.loc[idx].to_dict()
-                    # pandas 可能给numpy 类型，这里做一次转换
-                    safe_row = {k: (v.item() if hasattr(v, "item") else v) for k, v in row_dict.items()}
-                    top_rows.append({
-                        "index": idx,
-                        "score": score,
-                        "row": safe_row,
-                    })
-
-                result["anomaly"]["top_rows"] = top_rows
-
-            mark("complete")
-            log_json(
-                req_logger,
-                logging.INFO,
-                "analyze_completed",
-                time_ms={k:round(v, 2) for k,v in marks.items()},
-                rows=summary.rows,
-                cols=summary.cols,
-                request_id=req_id
-            )
-            return result
-            pass
-        except Exception as e:
-            log_exception(req_logger, e, "analyze_failure", request_id=req_id)
-            raise HTTPException(status_code=500, detail="Internal server error")
+        return AnalyzeAcceptedResponse(request_id=req_id, status_url=f"/results/{req_id}/status")
 
 def cleanup_expired_requests(base_dir:Path,ttl_seconds:int) -> int:
     now = time.time()

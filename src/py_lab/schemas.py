@@ -35,3 +35,18 @@ class AnomalyRowPreview(BaseModel):
 class ReloadModelResponse(BaseModel):
     model_path:str
     feature_columns: list[str]
+
+class AnalyzeAcceptedResponse(BaseModel):
+    request_id: str
+    status_url: str
+    summary_url: str | None = None
+    hist_url: str | None = None
+
+class AnalyzeStatusResponse(BaseModel):
+    request_id: str
+    status: str
+    updated_at:str
+    summary_url: str | None = None
+    hist_url: str | None = None
+    error: str | None = None
+    timing_ms: dict[str, float] | None = None
