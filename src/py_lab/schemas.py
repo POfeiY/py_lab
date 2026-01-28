@@ -50,3 +50,6 @@ class AnalyzeStatusResponse(BaseModel):
     hist_url: str | None = None
     error: str | None = None
     timing_ms: dict[str, float] | None = None
+
+class AnalyzeExcelResponse(BaseModel):
+    sheets: dict[str, list[list[str | float | int | None]]]

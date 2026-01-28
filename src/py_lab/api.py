@@ -17,6 +17,7 @@ from py_lab.logging_utils import RequestIdFilter, log_exception, log_json, setup
 from py_lab.model_store import reload_iforest
 from py_lab.schemas import (
     AnalyzeAcceptedResponse,
+    AnalyzeExcelResponse,
     AnalyzeStatusResponse,
     CleanupResponse,
     ErrorResponse,
@@ -318,3 +319,36 @@ def admin_reload_model(x_admin_token: str | None = Header(default = None)) -> Re
     return ReloadModelResponse(
         model_path=settings.model_path,
         feature_columns=bundle.feature_columns)
+
+@app.post(
+    "/analyze_excel",
+    response_model=AnalyzeExcelResponse,
+    status_code=202,
+    responses={
+        400: {"model": ErrorResponse, "description": "Bad Request"},
+        413: {"model": ErrorResponse, "description": "Payload Too Large"}},)
+async def analyze_excel_upload(
+        file: UploadFile = File(..., description="Excel file to analyze"),
+) -> AnalyzeExcelResponse:
+        if not file.filename or not (file.filename.lower()
+                                     .endswith(".xls") or file.filename.lower().endswith(".xlsx")):
+            raise HTTPException(status_code=404, detail="Only Excel files are supported")
+
+        content = await file.read(MAX_BYTES + 1)
+        if len(content) > MAX_BYTES:
+            raise HTTPException(status_code=413, detail="File too large(max 10MB)")
+
+        temp_path = Path("/tmp") / f"{secrets.token_urlsafe(16)}_{file.filename}"
+        temp_path.write_bytes(content)
+
+        try:
+            from py_lab.analyze_excel import analyze_excel
+            sheets = analyze_excel(str(temp_path))
+            logger.info(f"Successfully analyzed excel file: {sheets}")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to analyze excel file: {e}")
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
+
+        return AnalyzeExcelResponse(sheets=sheets)
