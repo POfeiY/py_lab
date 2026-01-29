@@ -4,6 +4,7 @@ import json
 import logging
 import secrets
 import shutil
+import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -26,6 +27,8 @@ from py_lab.schemas import (
 )
 from py_lab.settings import settings
 from py_lab.signing import constant_time_eq, sign
+
+_job_sem = threading.BoundedSemaphore(value=settings.max_concurrent_jobs)
 
 app = FastAPI(title="py-lab API", version="0.1.0")
 
@@ -157,76 +160,7 @@ def get_hist(request_id:str) -> FileResponse:
 def health() -> dict[str, str]:
     return {"status": "ok"}
 
-def run_analyze_job(req_id: str, hist:str | None, top_k:int) -> None:
-    req_logger = logging.getLogger("py_lab.job")
-    req_logger.addFilter(RequestIdFilter(req_id))
 
-    write_status(req_id, {"status": "running",})
-
-    t0 = time.perf_counter()
-    marks:dict[str, float] = {}
-    def mark(name:str) -> None:
-        marks[name] = round((time.perf_counter() - t0) * 1000, 2)  # ms
-
-    try:
-        work_dir = BASE_OUT_DIR/ req_id
-        work_dir.mkdir(parents=True, exist_ok=True)
-
-        csv_path = work_dir / "input.csv"
-
-        # 1) 读取输入 + 清洗
-        df = basic_clean(load_csv(csv_path))
-        mark("data_load_clean")
-
-        # 2) summary
-        summary = summarize(df)
-        (work_dir / "summary.json").write_text(
-            json.dumps(
-                {"rows": summary.rows, "cols": summary.cols, "columns": summary.columns},
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ),
-            encoding="utf-8",
-        )
-        mark("save_summary")
-
-        # 3) anomaly（加载模型推理）
-        # bundle = load_iforest(settings.model_path)
-        # anom = score_anomalies_with_model(df, bundle=bundle, top_k=top_k)
-        # 你若要把 anomaly 也落盘，可写 anomaly.json（可选）
-        mark("anomaly_score")
-
-        # 4) hist（可选）
-        if hist:
-            png_path = work_dir / "hist.png"
-            save_numeric_hist(df, hist, png_path)
-            # result["hist_url"] = make_download_url(req_id, "hist.png")
-        mark('hist')
-
-        # 5) 生成下载/静态 URL
-        hist_url = make_download_url(req_id, "hist.png") if hist else None
-        summary_url = make_download_url(req_id, "summary.json")
-
-        mark("complete")
-
-        write_status(
-            req_id,
-            {
-                "status": "done",
-                "summary_url": summary_url,
-                "hist_url": hist_url,
-                "timing_ms": marks,
-            },
-        )
-
-        # 结构化日志（你已有 log_json）
-        log_json(req_logger, logging.INFO, "analyze_completed", request_id=req_id, time_ms=marks)
-
-    except Exception as e:
-        write_status(req_id, {
-            "status": "failed",
-            "error": f"{type(e).__name__}: {e}",})
-        log_exception(req_logger, e, "analyze_job_failure", request_id=req_id)
 
 @app.post(
     "/analyze",
@@ -241,10 +175,14 @@ async def analyze_upload(
         hist: str | None = Form(None, description="Numeric column for histogram"),
         top_k: int = Form(5, ge=1, le=50,description="Top-K anomalies")
 ) -> AnalyzeAcceptedResponse:
+        req_logger = logging.getLogger("py_lab.job")
+        
+
         if not file.filename or not file.filename.lower().endswith(".csv"):
             raise HTTPException(status_code=404, detail="Only CSV files are supported")
 
         req_id = secrets.token_urlsafe(24)
+        req_logger.addFilter(RequestIdFilter(req_id))
 
         work_dir = BASE_OUT_DIR / req_id
         work_dir.mkdir(parents=True, exist_ok=True)
@@ -258,6 +196,83 @@ async def analyze_upload(
 
         write_status(req_id, {"status": "queued"})
 
+        def run_analyze_job(req_id: str, hist:str | None, top_k:int) -> None:
+            with _job_sem:
+                write_status(req_id, {"status": "running",})
+
+                t0 = time.perf_counter()
+                marks:dict[str, float] = {}
+                def mark(name:str) -> None:
+                    marks[name] = round((time.perf_counter() - t0) * 1000, 2)  # ms
+
+                try:
+                    work_dir = BASE_OUT_DIR/ req_id
+                    work_dir.mkdir(parents=True, exist_ok=True)
+
+                    csv_path = work_dir / "input.csv"
+
+                    # 1) 读取输入 + 清洗
+                    df = basic_clean(load_csv(csv_path))
+                    mark("data_load_clean")
+
+                    # 2) summary
+                    summary = summarize(df)
+                    (work_dir / "summary.json").write_text(
+                        json.dumps(
+                            {
+                                "rows": summary.rows,
+                                "cols": summary.cols,
+                                "columns": summary.columns},
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        ),
+                        encoding="utf-8",
+                    )
+                    mark("save_summary")
+
+                    # 3) anomaly（加载模型推理）
+                    # bundle = load_iforest(settings.model_path)
+                    # anom = score_anomalies_with_model(df, bundle=bundle, top_k=top_k)
+                    # 你若要把 anomaly 也落盘，可写 anomaly.json（可选）
+                    mark("anomaly_score")
+
+                    # 4) hist（可选）
+                    if hist:
+                        png_path = work_dir / "hist.png"
+                        save_numeric_hist(df, hist, png_path)
+                        # result["hist_url"] = make_download_url(req_id, "hist.png")
+                    mark('hist')
+
+                    # 5) 生成下载/静态 URL
+                    hist_url = make_download_url(req_id, "hist.png") if hist else None
+                    summary_url = make_download_url(req_id, "summary.json")
+
+                    mark("complete")
+
+                    write_status(
+                        req_id,
+                        {
+                            "status": "done",
+                            "summary_url": summary_url,
+                            "hist_url": hist_url,
+                            "timing_ms": marks,
+                        },
+                    )
+
+                    # 结构化日志（你已有 log_json）
+                    log_json(
+                        req_logger,
+                        logging.INFO,
+                        "analyze_completed",
+                        request_id=req_id,
+                        time_ms=marks)
+
+                except Exception as e:
+                    write_status(req_id, {
+                        "status": "failed",
+                        "error": f"{type(e).__name__}: {e}",})
+                    log_exception(req_logger, e, "analyze_job_failure", request_id=req_id)
+        
         background_tasks.add_task(run_analyze_job,req_id, hist, top_k)
 
         return AnalyzeAcceptedResponse(request_id=req_id, status_url=f"/requests/{req_id}/status")
@@ -352,3 +367,4 @@ async def analyze_excel_upload(
                 temp_path.unlink()
 
         return AnalyzeExcelResponse(sheets=sheets)
+

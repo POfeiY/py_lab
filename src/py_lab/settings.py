@@ -21,5 +21,6 @@ class Settings:
     download_signing_key: str = os.getenv("DOWNLOAD_SIGNING_KEY", "")
     download_url_ttl_seconds: int = _get_init("DOWNLOAD_URL_TTL_SECONDS", 60 * 60)
     model_path: str = os.getenv("MODEL_PATH", "models/iforest.pkl")
+    max_concurrent_jobs = os.getenv("MAX_CONCURRENT_JOBS", 2)
 
 settings = Settings()
