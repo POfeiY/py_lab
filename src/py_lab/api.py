@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import secrets
@@ -10,7 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from py_lab.data_pipeline import basic_clean, load_csv, save_numeric_hist, summarize
@@ -102,6 +103,29 @@ def make_download_url(req_id:str, filename:str) -> str:
     message = f"{req_id}:{filename}:{exp}"
     sig = sign(settings.download_signing_key, message)
     return absolute_url(f"/download/{req_id}/{filename}?exp={exp}&sig={sig}")
+
+@app.get("/requests/{request_id}/events")
+async def request_event(request_id:str) -> StreamingResponse:
+    async def event_generator():
+        last = None
+
+        while True:
+            st = read_status(request_id)
+
+            if st is None:
+                yield "event: error\ndata: {\"detail\":\"Not found\"}\n\n"
+                return
+
+            cur = json.dumps(st,ensure_ascii=False, separators=(",", ":"))
+            if cur != last:
+                last = cur
+                yield f"event: status\ndata: {cur}\n\n"
+
+                if st.get("status") in ("done", "failed"):
+                    return
+            await asyncio.sleep(0.5)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 @app.get(
     "/requests/{request_id}/status",
