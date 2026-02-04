@@ -28,6 +28,7 @@ from py_lab.schemas import (
 )
 from py_lab.settings import settings
 from py_lab.signing import constant_time_eq, sign
+from py_lab.storage import save_upload_file_streaming, validate_file_type_strict
 
 _job_sem = threading.BoundedSemaphore(value=settings.max_concurrent_jobs)
 
@@ -392,3 +393,40 @@ async def analyze_excel_upload(
 
         return AnalyzeExcelResponse(sheets=sheets)
 
+
+@app.post("files/upload")
+async def upload_file(file: UploadFile = File(...)):
+    # 1、严格校验 扩展名 + MIME
+    try:
+        validate_file_type_strict(
+            filename=file.filename or "",
+            content_type=file.content_type,
+            allowed_ext=settings.allowed_upload_extensions,
+            allowed_mime=settings.allowed_upload_mimes,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=415, detail=str(e))
+
+    # 2、保存文件（流式写入 + 大小限制）
+    try:
+        stored = await save_upload_file_streaming(
+            upload = file,
+            upload_dir=settings.upload_dir,
+            max_bytes=settings.max_upload_size_bytes,
+        )
+    except OverflowError:
+        raise HTTPException(
+            status_code=413,
+            detail=f"file_too_large:max={settings.max_upload_size_bytes} bytes"
+            )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"failed_to_save_file:{type(e).__name__}")
+
+    return JSONResponse({
+        "file_id": stored.file_id,
+        "original_filename": stored.original_filename,
+        "content_type": stored.content_type,
+        "size_bytes": stored.size_bytes,
+        "saved_path": stored.saved_path,
+        "max_allowed_size": settings.max_upload_size_bytes,
+    })

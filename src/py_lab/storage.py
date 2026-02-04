@@ -80,7 +80,7 @@ async def save_upload_file_streaming(
         except Exception:
             pass
         raise
-    
+
     return StoredFile(
         file_id=file_id,
         file_path=Path(outpath),

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import FrozenSet
 
 
 def _get_init(name:str, default: int) -> int:
@@ -11,7 +10,7 @@ def _get_init(name:str, default: int) -> int:
         return default
     return int(v)
 
-def _parse_csv_set(value: str) -> FrozenSet[str]:
+def _parse_csv_set(value: str) -> frozenset[str]:
     return frozenset(item.strip() for item in value.split(",") if item.strip())
 
 @dataclass(frozen=True)
@@ -28,11 +27,11 @@ class Settings:
     max_concurrent_jobs = os.getenv("MAX_CONCURRENT_JOBS", 2)
 
     max_upload_size: int = _get_init("MAX_UPLOAD_SIZE", 10 * 1024 * 1024) # 10 MB
-    allowed_mime_types: FrozenSet[str] = _parse_csv_set(os.getenv(
+    allowed_mime_types: frozenset[str] = _parse_csv_set(os.getenv(
         "ALLOWED_MIME_TYPES",
         "image/png,image/jpeg,application/pdf,text/plain"
         ))
-    allowed_extensions: FrozenSet[str] = _parse_csv_set(os.getenv(
+    allowed_extensions: frozenset[str] = _parse_csv_set(os.getenv(
         "ALLOWED_EXTENSIONS",
         ".png,.jpg,.jpeg,.pdf,.txt"
         ))
